@@ -1,54 +1,151 @@
 ﻿using OpenQA.Selenium;
 using OpenQA.Selenium.Chrome;
-using PdfSharp.Pdf;
-using PdfSharp.Drawing;
+using PuppeteerSharp;
+using PuppeteerSharp.Media;
+using WebDriverManager;
+using WebDriverManager.DriverConfigs.Impl;
 
 class Program
 {
     static async Task Main()
     {
         string url = string.Empty;
-        string pdfPath = "ImagesOutput.pdf";
+        string pdfPath = "DocumentOutput.pdf";
 
         while (string.IsNullOrEmpty(url))
         {
-            Console.WriteLine("Give me scribd.com document url:");
+            Console.WriteLine("Input scribd url:");
             url = Console.ReadLine() ?? string.Empty;
         }
 
         Console.Clear();
 
         Console.WriteLine($"Document url: {url}");
-        Console.WriteLine("Fetching pages (give me a few minutes) ...");
+        Console.WriteLine("Fetching (give me a few minutes) ...");
 
-        var imageUrls = GetImageUrlsFromPage(url);
+        var html = ExtractPagesFromContainers(url);
 
-        Console.WriteLine("Downloading images ...");
+        Console.WriteLine("Creating PDF file...");
 
-        var imageFiles = await DownloadImagesAsync(imageUrls);
+        await GeneratePdfFromHtml(html, pdfPath);
 
-        Console.WriteLine("Creating a pdf file ...");
-
-        CreatePdfFromImages(imageFiles, pdfPath);
-
-        Console.WriteLine("Pdf saved to: " + pdfPath);
+        Console.WriteLine("PDF saved to: " + pdfPath);
 
         Console.ReadKey();
     }
 
-    static List<string> GetImageUrlsFromPage(string url)
+    public static async Task GeneratePdfFromHtml(string htmlContent, string outputPath)
     {
-        var imageUrls = new HashSet<string>();
+        await new BrowserFetcher().DownloadAsync();
+        using var browser = await Puppeteer.LaunchAsync(new LaunchOptions { Headless = true });
+        using var page = await browser.NewPageAsync();
+        await page.SetContentAsync(htmlContent);
+
+        var bodyHeight = await page.EvaluateExpressionAsync<double>(
+            "document.documentElement.scrollHeight"
+        );
+
+        var pdfOptions = new PdfOptions
+        {
+            PrintBackground = true,
+            DisplayHeaderFooter = false,
+            MarginOptions = new MarginOptions
+            {
+                Top = "0",
+                Right = "0",
+                Bottom = "0",
+                Left = "0"
+            },
+            Height = $"{bodyHeight}px",
+            PreferCSSPageSize = false,
+            Scale = 1
+        };
+
+        await page.PdfAsync(outputPath, pdfOptions);
+    }
+
+    static string ExtractPagesFromContainers(string url)
+    {
+        new DriverManager().SetUpDriver(new ChromeConfig());
 
         var service = ChromeDriverService.CreateDefaultService();
         service.HideCommandPromptWindow = true;
 
         var options = new ChromeOptions();
         options.AddArgument("--headless");
+        options.AddArgument("--window-size=1200,1600");
+        options.AddArgument("--hide-scrollbars");
 
         using var driver = new ChromeDriver(service, options);
         driver.Navigate().GoToUrl(url);
 
+        Console.WriteLine("Loading all pages...");
+        ScrollToBottom(driver);
+        Thread.Sleep(3000);
+
+        Console.WriteLine($"Processing...");
+        var pageContainers = driver.FindElements(By.CssSelector(".outer_page_container"));
+        string pageHtml = ExtractPageContainerWithStyles(driver, pageContainers[0]);
+        string htmlFilePath = CreatePageHtml(pageHtml);
+
+        driver.Quit();
+        return htmlFilePath;
+    }
+
+    static string ExtractPageContainerWithStyles(ChromeDriver driver, IWebElement container)
+    {
+        ((IJavaScriptExecutor)driver).ExecuteScript(@"
+            const container = arguments[0];
+            container.querySelectorAll('.between_page_portal_root').forEach(el => el.remove());
+        ", container);
+
+        return (string)driver.ExecuteScript(@"
+            function extractPageWithStyles(container) {
+                const clone = container.cloneNode(true);
+                
+                function copyAllStyles(source, target) {
+                    const computed = getComputedStyle(source);
+                    for (let i = 0; i < computed.length; i++) {
+                        const prop = computed[i];
+                        target.style[prop] = computed.getPropertyValue(prop);
+                    }
+                }
+                
+                copyAllStyles(container, clone);
+                
+                const allSourceElements = container.getElementsByTagName('*');
+                const allCloneElements = clone.getElementsByTagName('*');
+                
+                for (let i = 0; i < allSourceElements.length; i++) {
+                    copyAllStyles(allSourceElements[i], allCloneElements[i]);
+                }
+
+                return clone.outerHTML;
+            }
+            
+            return extractPageWithStyles(arguments[0]);
+        ", container);
+    }
+
+    static string CreatePageHtml(string pageContent)
+    {
+        string html = $@"
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset='UTF-8'>
+                <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+            </head>
+            <body>
+                {pageContent}
+            </body>
+            </html>";
+
+        return html;
+    }
+
+    static void ScrollToBottom(ChromeDriver driver)
+    {
         int scrollStep = 250;
         int waitPerScroll = 300;
         int total = 0;
@@ -63,68 +160,5 @@ class Program
 
             if (total >= scrollHeight) break;
         }
-
-        Thread.Sleep(2000);
-
-        var images = driver.FindElements(By.CssSelector("img.absimg"));
-        foreach (var img in images)
-        {
-            var src = img.GetAttribute("src");
-            if (!string.IsNullOrEmpty(src))
-            {
-                if (!src.StartsWith("http"))
-                {
-                    var baseUri = new Uri(url);
-                    src = new Uri(baseUri, src).ToString();
-                }
-                imageUrls.Add(src);
-            }
-        }
-
-        driver.Quit();
-        return imageUrls.ToList();
-    }
-
-    static async Task<List<string>> DownloadImagesAsync(List<string> imageUrls)
-    {
-        var httpClient = new HttpClient();
-        var imageFiles = new List<string>();
-        Directory.CreateDirectory("Downloaded");
-
-        foreach (var url in imageUrls)
-        {
-            try
-            {
-                byte[] imageData = await httpClient.GetByteArrayAsync(url);
-                string filename = Path.Combine("Downloaded", Path.GetFileName(new Uri(url).LocalPath));
-                await File.WriteAllBytesAsync(filename, imageData);
-                imageFiles.Add(filename);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Failed to download image {url}: {ex.Message}");
-            }
-        }
-
-        return imageFiles;
-    }
-
-    static void CreatePdfFromImages(List<string> imageFiles, string outputPdfPath)
-    {
-        using var doc = new PdfDocument();
-
-        foreach (var imgPath in imageFiles)
-        {
-            var page = doc.AddPage();
-            using var gfx = XGraphics.FromPdfPage(page);
-            using var img = XImage.FromFile(imgPath);
-
-            page.Width = img.PixelWidth * 72 / img.HorizontalResolution;
-            page.Height = img.PixelHeight * 72 / img.VerticalResolution;
-
-            gfx.DrawImage(img, 0, 0, page.Width, page.Height);
-        }
-
-        doc.Save(outputPdfPath);
     }
 }

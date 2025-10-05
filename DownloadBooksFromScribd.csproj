@@ -8,9 +8,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="PDFsharp" Version="6.1.1" />
-    <PackageReference Include="Selenium.WebDriver" Version="4.31.0" />
-    <PackageReference Include="Selenium.WebDriver.ChromeDriver" Version="135.0.7049.4200" />
+    <PackageReference Include="PuppeteerSharp" Version="20.2.2" />
+    <PackageReference Include="Selenium.WebDriver" Version="4.36.0" />
+    <PackageReference Include="Selenium.WebDriver.ChromeDriver" Version="141.0.7390.5400" />
+    <PackageReference Include="WebDriverManager" Version="2.17.6" />
   </ItemGroup>
 
 </Project>
